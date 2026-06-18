@@ -1,0 +1,27 @@
+# Environment secrets (keep *.example templates)
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.local.example
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Contracts (Foundry artifacts)
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# Terminals / local tooling
+terminals/
