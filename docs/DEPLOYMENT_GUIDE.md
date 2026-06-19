@@ -26,15 +26,36 @@ forge script script/DeployPQCAttestationRegistry.s.sol --rpc-url https://sepolia
 
 After deployment, copy the proxy address into `frontend/lib/wagmi-config.ts` and `frontend/.env.local.example`.
 
-## Step 3: Grant Issuer Role (Optional but Recommended)
+## Step 3: Grant Issuer Role
+
+The deploy script **already grants `ISSUER_ROLE` to the deployer wallet**. You only need this step if your MetaMask wallet is **different** from the deployer.
+
+Check the dashboard **Issuer role** tile after connecting — or use cast:
 
 ```bash
-cast send $CONTRACT_ADDRESS \
+cd contracts
+export REGISTRY_ADDRESS=0xYourProxyAddress
+export BASE_SEPOLIA_RPC=https://sepolia.base.org
+
+# Check role (replace $WALLET)
+cast call $REGISTRY_ADDRESS "hasRole(bytes32,address)(bool)" \
+  $(cast keccak "ISSUER_ROLE") $WALLET --rpc-url $BASE_SEPOLIA_RPC
+
+# Grant to another wallet (admin PRIVATE_KEY only)
+cast send $REGISTRY_ADDRESS \
   "grantRole(bytes32,address)" \
   $(cast keccak "ISSUER_ROLE") \
   $YOUR_ISSUER_ADDRESS \
   --private-key $PRIVATE_KEY \
   --rpc-url $BASE_SEPOLIA_RPC
+```
+
+Windows PowerShell helper:
+
+```powershell
+cd contracts
+$env:REGISTRY_ADDRESS = "0xYourProxyAddress"
+.\scripts\grant-issuer.ps1 -IssuerAddress "0xYourMetaMaskAddress"
 ```
 
 ## Step 4: Frontend

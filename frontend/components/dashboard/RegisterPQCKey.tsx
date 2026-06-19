@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { toast } from 'sonner';
-import { KeyRound, Sparkles } from 'lucide-react';
+import { Download, KeyRound, Sparkles, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,15 +12,33 @@ import {
   isRegistryConfigured,
   PQC_ATTESTATION_REGISTRY_ADDRESS,
   pqcAttestationRegistryAbi,
+  wagmiErrorMessage,
 } from '@/lib/wagmi-config';
-import { generateDemoPqcKeyMaterial } from '@/lib/pqc-demo';
+import {
+  exportEncryptedIdentity,
+  getOrCreateHybridIdentity,
+  importEncryptedIdentity,
+  loadStoredIdentity,
+} from '@/lib/hybrid-pqc';
 
 export function RegisterPQCKey() {
   const { address } = useAccount();
   const [pubKeyHash, setPubKeyHash] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [passphrase, setPassphrase] = useState('');
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const { writeContract, data: hash, isPending, reset } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
+
+  useEffect(() => {
+    if (!address) {
+      setPubKeyHash('');
+      return;
+    }
+    const stored = loadStoredIdentity(address);
+    if (stored) setPubKeyHash(stored.pubKeyHash);
+  }, [address]);
 
   useEffect(() => {
     if (isSuccess && hash) {
@@ -31,16 +49,65 @@ export function RegisterPQCKey() {
     }
   }, [isSuccess, hash, reset]);
 
-  const generateDemo = () => {
+  const generateHybridKeys = async () => {
     if (!address) {
       toast.error('Connect your wallet first');
       return;
     }
-    const { pubKeyHash: demoHash } = generateDemoPqcKeyMaterial(address);
-    setPubKeyHash(demoHash);
-    toast.message('Demo PQC key hash generated', {
-      description: 'Replace with libcrux/oqs.js output in production.',
-    });
+    setGenerating(true);
+    try {
+      const identity = await getOrCreateHybridIdentity(address);
+      setPubKeyHash(identity.pubKeyHash);
+      toast.success('Hybrid PQC identity generated', {
+        description: 'X25519MlKem768Draft00 + P-256 ECDSA + ML-DSA-65',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'WASM initialization failed';
+      toast.error('Key generation failed', { description: message });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleExport = async () => {
+    if (!address) {
+      toast.error('Connect your wallet first');
+      return;
+    }
+    if (!passphrase || passphrase.length < 8) {
+      toast.error('Enter an export passphrase (min 8 characters)');
+      return;
+    }
+    try {
+      await exportEncryptedIdentity(address, passphrase);
+      toast.success('Identity exported', {
+        description: 'Encrypted backup downloaded — store it safely offline.',
+      });
+    } catch (err) {
+      toast.error('Export failed', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
+  };
+
+  const handleImport = async (file: File) => {
+    if (!address) {
+      toast.error('Connect your wallet first');
+      return;
+    }
+    if (!passphrase) {
+      toast.error('Enter the export passphrase');
+      return;
+    }
+    try {
+      const identity = await importEncryptedIdentity(file, passphrase, address);
+      setPubKeyHash(identity.pubKeyHash);
+      toast.success('Identity imported', { description: 'Hybrid keys restored to this browser.' });
+    } catch (err) {
+      toast.error('Import failed', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
   };
 
   const register = () => {
@@ -49,7 +116,7 @@ export function RegisterPQCKey() {
       return;
     }
     if (!pubKeyHash) {
-      toast.error('Enter or generate a PQC public key hash');
+      toast.error('Generate a hybrid PQC key first');
       return;
     }
 
@@ -61,13 +128,13 @@ export function RegisterPQCKey() {
         args: [pubKeyHash as `0x${string}`],
       },
       {
-        onError: (err) => toast.error('Registration failed', { description: err.shortMessage }),
+        onError: (err) => toast.error('Registration failed', { description: wagmiErrorMessage(err) }),
       },
     );
     toast.message('Confirm in your wallet');
   };
 
-  const busy = isPending || isConfirming;
+  const busy = isPending || isConfirming || generating;
 
   return (
     <Card>
@@ -77,8 +144,8 @@ export function RegisterPQCKey() {
           <CardTitle>1. Register PQC Public Key</CardTitle>
         </div>
         <CardDescription>
-          Generate a post-quantum keypair off-chain and register its hash on-chain to establish
-          your quantum-resistant issuer identity.
+          Generate a hybrid post-quantum identity off-chain (X25519+ML-KEM-768 KEM and P-256
+          ECDSA+ML-DSA-65 signing) and register its keccak256 commitment on-chain.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -92,14 +159,47 @@ export function RegisterPQCKey() {
             className="font-mono text-xs"
           />
         </div>
+        <div>
+          <Label htmlFor="backup-passphrase">Backup passphrase (export / import)</Label>
+          <Input
+            id="backup-passphrase"
+            type="password"
+            placeholder="Min 8 characters"
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+          />
+        </div>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={generateDemo} variant="outline" disabled={!address}>
+          <Button onClick={generateHybridKeys} variant="outline" disabled={!address || busy}>
             <Sparkles className="mr-2 h-4 w-4" />
-            Generate demo hash
+            {generating ? 'Generating…' : 'Generate hybrid PQC keys'}
           </Button>
           <Button onClick={register} disabled={busy || !address}>
-            {busy ? 'Confirming…' : 'Register on-chain'}
+            {isPending || isConfirming ? 'Confirming…' : 'Register on-chain'}
           </Button>
+          <Button onClick={handleExport} variant="outline" disabled={!address || !pubKeyHash}>
+            <Download className="mr-2 h-4 w-4" />
+            Export backup
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!address}
+            onClick={() => importInputRef.current?.click()}
+          >
+            <Upload className="mr-2 h-4 w-4" />
+            Import backup
+          </Button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleImport(file);
+              e.target.value = '';
+            }}
+          />
         </div>
       </CardContent>
     </Card>

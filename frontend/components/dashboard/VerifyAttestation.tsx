@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useReadContract } from 'wagmi';
 import { toast } from 'sonner';
-import { Search } from 'lucide-react';
+import { CheckCircle2, Download, Search, ShieldCheck, Upload, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -15,10 +15,23 @@ import {
   pqcAttestationRegistryAbi,
 } from '@/lib/wagmi-config';
 import { truncateHex } from '@/lib/utils';
+import {
+  exportAttestationProof,
+  importAttestationProofFromFile,
+  loadAttestationProof,
+  verifyAttestationOffChain,
+  type AttestationProofRecord,
+  type OffChainVerificationResult,
+} from '@/lib/hybrid-pqc';
+import type { Hex } from 'viem';
 
 export function VerifyAttestation() {
   const [attestationId, setAttestationId] = useState('');
   const [lookupId, setLookupId] = useState<bigint | undefined>();
+  const [proof, setProof] = useState<AttestationProofRecord | null>(null);
+  const [verification, setVerification] = useState<OffChainVerificationResult | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const { data, isFetching, error, refetch } = useReadContract({
     address: PQC_ATTESTATION_REGISTRY_ADDRESS,
@@ -27,6 +40,12 @@ export function VerifyAttestation() {
     args: lookupId !== undefined ? [lookupId] : undefined,
     query: { enabled: isRegistryConfigured && lookupId !== undefined },
   });
+
+  useEffect(() => {
+    if (!data?.pqcSigHash) return;
+    const local = loadAttestationProof(data.pqcSigHash as Hex);
+    if (local) setProof(local);
+  }, [data?.pqcSigHash]);
 
   const lookup = () => {
     if (!isRegistryConfigured) {
@@ -37,8 +56,68 @@ export function VerifyAttestation() {
       toast.error('Enter an attestation ID');
       return;
     }
+    setVerification(null);
     setLookupId(BigInt(attestationId));
     void refetch();
+  };
+
+  const attachLocalProof = () => {
+    if (!data?.pqcSigHash) return;
+    const local = loadAttestationProof(data.pqcSigHash as Hex);
+    if (local) {
+      setProof(local);
+      toast.message('Loaded proof from this browser');
+    } else {
+      toast.error('No local proof found — import a proof JSON file');
+    }
+  };
+
+  const runVerification = async () => {
+    if (!data || !proof) {
+      toast.error('Load an attestation and attach a proof first');
+      return;
+    }
+    setVerifying(true);
+    try {
+      const result = await verifyAttestationOffChain(
+        {
+          subject: data.subject as Hex,
+          contentHash: data.contentHash as Hex,
+          pqcPubKeyHash: data.pqcPubKeyHash as Hex,
+          pqcSigHash: data.pqcSigHash as Hex,
+        },
+        proof,
+      );
+      setVerification(result);
+      const allPass =
+        result.signatureValid &&
+        result.pubKeyHashMatches &&
+        result.sigHashMatches &&
+        result.messageMatches;
+      if (allPass) {
+        toast.success('Hybrid PQC verification passed');
+      } else {
+        toast.error('Verification failed', { description: 'See checklist below' });
+      }
+    } catch (err) {
+      toast.error('Verification error', {
+        description: err instanceof Error ? err.message : 'WASM error',
+      });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const handleImportProof = async (file: File) => {
+    try {
+      const imported = await importAttestationProofFromFile(file);
+      setProof(imported);
+      toast.success('Proof imported');
+    } catch (err) {
+      toast.error('Invalid proof file', {
+        description: err instanceof Error ? err.message : 'Parse error',
+      });
+    }
   };
 
   return (
@@ -49,7 +128,8 @@ export function VerifyAttestation() {
           <CardTitle>Verify Attestation</CardTitle>
         </div>
         <CardDescription>
-          Read on-chain attestation data directly from the registry contract.
+          Look up on-chain data, then verify the hybrid P-256 ECDSA + ML-DSA-65 signature off-chain
+          using a proof bundle (auto-saved when you issue from this browser).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -105,10 +185,78 @@ export function VerifyAttestation() {
               label="Timestamp"
               value={new Date(Number(data.timestamp) * 1000).toLocaleString()}
             />
+
+            <div className="flex flex-wrap gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-700">
+              <Button size="sm" variant="outline" onClick={attachLocalProof}>
+                Load local proof
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => importInputRef.current?.click()}>
+                <Upload className="mr-1 h-3 w-3" />
+                Import proof
+              </Button>
+              {proof && (
+                <Button size="sm" variant="outline" onClick={() => exportAttestationProof(proof)}>
+                  <Download className="mr-1 h-3 w-3" />
+                  Export proof
+                </Button>
+              )}
+              <Button size="sm" onClick={runVerification} disabled={!proof || verifying}>
+                <ShieldCheck className="mr-1 h-3 w-3" />
+                {verifying ? 'Verifying…' : 'Verify PQC signature'}
+              </Button>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void handleImportProof(file);
+                  e.target.value = '';
+                }}
+              />
+            </div>
+
+            {proof && (
+              <p className="text-xs text-zinc-500">
+                Proof loaded — sig {truncateHex(proof.pqcSigHash)} · issuer{' '}
+                {truncateHex(proof.issuerAddress, 6, 4)}
+              </p>
+            )}
+
+            {verification && (
+              <div className="space-y-2 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  Off-chain verification
+                </p>
+                <CheckItem ok={verification.messageMatches} label="Proof matches on-chain subject + content hashes" />
+                <CheckItem ok={verification.pubKeyHashMatches} label="Public key hash matches registered issuer key" />
+                <CheckItem ok={verification.sigHashMatches} label="Signature hash matches on-chain pqcSigHash" />
+                <CheckItem
+                  ok={verification.signatureValid}
+                  label="Hybrid signature valid (ECDSA P-256 + ML-DSA-65)"
+                />
+              </div>
+            )}
           </div>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function CheckItem({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <div className="flex items-start gap-2 text-sm">
+      {ok ? (
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+      ) : (
+        <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+      )}
+      <span className={ok ? 'text-zinc-800 dark:text-zinc-200' : 'text-red-700 dark:text-red-300'}>
+        {label}
+      </span>
+    </div>
   );
 }
 

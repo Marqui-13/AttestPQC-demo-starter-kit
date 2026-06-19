@@ -12,12 +12,17 @@ import {
   isRegistryConfigured,
   PQC_ATTESTATION_REGISTRY_ADDRESS,
   pqcAttestationRegistryAbi,
+  wagmiErrorMessage,
 } from '@/lib/wagmi-config';
 import {
-  generateDemoPqcKeyMaterial,
+  exportAttestationProof,
+  getOrCreateHybridIdentity,
   hashAttestationContent,
   hashSubject,
-} from '@/lib/pqc-demo';
+  loadAttestationProof,
+  signAttestationHybrid,
+} from '@/lib/hybrid-pqc';
+import type { Hex } from 'viem';
 
 export function IssueAttestation() {
   const { address } = useAccount();
@@ -27,6 +32,8 @@ export function IssueAttestation() {
   const [contentHash, setContentHash] = useState('');
   const [pqcSigHash, setPqcSigHash] = useState('');
   const [metadataURI, setMetadataURI] = useState('');
+  const [signing, setSigning] = useState(false);
+  const [lastSigHash, setLastSigHash] = useState<Hex | ''>('');
 
   const { writeContract, data: hash, isPending, reset } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
@@ -40,11 +47,12 @@ export function IssueAttestation() {
     }
   }, [isSuccess, hash, reset]);
 
-  const fillDemo = () => {
+  const fillAndSign = async () => {
     if (!address) {
       toast.error('Connect your wallet first');
       return;
     }
+
     const demoSubjectId = subjectId || 'alice@example.com';
     const demoContent =
       content ||
@@ -54,14 +62,35 @@ export function IssueAttestation() {
         issuedBy: address,
       });
 
-    const { sigHash } = generateDemoPqcKeyMaterial(address);
+    const subj = hashSubject(demoSubjectId);
+    const cont = hashAttestationContent(demoContent);
+
     setSubjectId(demoSubjectId);
     setContent(demoContent);
-    setSubject(hashSubject(demoSubjectId));
-    setContentHash(hashAttestationContent(demoContent));
-    setPqcSigHash(sigHash);
-    setMetadataURI('ipfs://demo-attestation-metadata');
-    toast.message('Demo attestation fields filled');
+    setSubject(subj);
+    setContentHash(cont);
+    setMetadataURI('ipfs://attestation-metadata');
+    setSigning(true);
+
+    try {
+      await getOrCreateHybridIdentity(address);
+      const { pqcSigHash: sigHash, verified } = await signAttestationHybrid(address, subj, cont, {
+        subjectId: demoSubjectId,
+        content: demoContent,
+      });
+      setPqcSigHash(sigHash);
+      setLastSigHash(sigHash);
+      toast.success('Attestation signed with hybrid PQC', {
+        description: verified
+          ? 'ECDSA P-256 + ML-DSA-65 verified locally'
+          : 'Signature produced (verify failed — check WASM)',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Signing failed';
+      toast.error('Hybrid signing failed', { description: message });
+    } finally {
+      setSigning(false);
+    }
   };
 
   const issue = () => {
@@ -87,13 +116,13 @@ export function IssueAttestation() {
         ],
       },
       {
-        onError: (err) => toast.error('Issuance failed', { description: err.shortMessage }),
+        onError: (err) => toast.error('Issuance failed', { description: wagmiErrorMessage(err) }),
       },
     );
     toast.message('Confirm in your wallet');
   };
 
-  const busy = isPending || isConfirming;
+  const busy = isPending || isConfirming || signing;
 
   return (
     <Card>
@@ -103,8 +132,8 @@ export function IssueAttestation() {
           <CardTitle>2. Issue Attestation</CardTitle>
         </div>
         <CardDescription>
-          Anchor a verifiable claim (credential, compliance record, supply chain proof) with PQC
-          signature and content hashes. Requires ISSUER_ROLE and a registered PQC key.
+          Anchor a verifiable claim with a hybrid P-256 ECDSA + ML-DSA-65 signature commitment.
+          Requires ISSUER_ROLE and a registered PQC key.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -149,12 +178,24 @@ export function IssueAttestation() {
           <HashField label="PQC sig hash" value={pqcSigHash} onChange={setPqcSigHash} />
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={fillDemo} variant="outline" disabled={!address}>
-            Fill demo fields
+          <Button onClick={fillAndSign} variant="outline" disabled={!address || busy}>
+            {signing ? 'Signing…' : 'Fill & hybrid-sign'}
           </Button>
           <Button onClick={issue} disabled={busy || !address}>
-            {busy ? 'Confirming…' : 'Issue on-chain'}
+            {isPending || isConfirming ? 'Confirming…' : 'Issue on-chain'}
           </Button>
+          {lastSigHash && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                const proof = loadAttestationProof(lastSigHash);
+                if (proof) exportAttestationProof(proof);
+                else toast.error('Proof not found in local storage');
+              }}
+            >
+              Export proof JSON
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

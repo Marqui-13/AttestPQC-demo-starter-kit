@@ -133,6 +133,23 @@ export const pqcAttestationRegistryAbi = [
     stateMutability: 'view',
   },
   {
+    type: 'function',
+    name: 'AUDITOR_ROLE',
+    inputs: [],
+    outputs: [{ name: '', type: 'bytes32' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'hasRole',
+    inputs: [
+      { name: 'role', type: 'bytes32' },
+      { name: 'account', type: 'address' },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
+    stateMutability: 'view',
+  },
+  {
     type: 'event',
     name: 'PQCKeyRegistered',
     inputs: [
@@ -165,3 +182,20 @@ export const pqcAttestationRegistryAbi = [
     ],
   },
 ] as const;
+
+/** keccak256("ISSUER_ROLE") — matches AccessControl role id */
+export const ISSUER_ROLE_HASH =
+  '0x114e74f6ea3bd819998f78687bfcb11b140da08e9b7d222fa9c1f1ba1f2aa122' as const;
+
+export function grantIssuerRoleCastCommand(issuerAddress: string): string {
+  const registry = PQC_ATTESTATION_REGISTRY_ADDRESS;
+  return `cast send ${registry} "grantRole(bytes32,address)" ${ISSUER_ROLE_HASH} ${issuerAddress} --rpc-url $BASE_SEPOLIA_RPC --private-key $PRIVATE_KEY`;
+}
+
+export function wagmiErrorMessage(err: unknown): string {
+  if (err && typeof err === 'object' && 'shortMessage' in err) {
+    return String((err as { shortMessage: string }).shortMessage);
+  }
+  if (err instanceof Error) return err.message;
+  return 'Transaction failed';
+}

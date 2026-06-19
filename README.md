@@ -158,12 +158,12 @@ npm install
 Update the contract address after deployment.
 
 **Key Flows in the dApp**:
-1. Connect wallet
-2. Register your PQC public key
-3. Issue an attestation (e.g., professional credential) — signs with PQC key, anchors hash + metadata on-chain
-4. Generate a zk-STARK proof, proving validity without revealing full data
-5. Anchor the STARK proof commitment on-chain
-6. Anyone can verify the attestation + proof via the dApp or directly on-chain / subgraph
+1. Connect wallet (check **Issuer role** tile — grant via `cast` if not the deployer)
+2. **Generate hybrid PQC keys** → export encrypted backup → **Register on-chain**
+3. **Fill & hybrid-sign** → **Issue on-chain** (proof auto-saved locally; export JSON to share)
+4. **Verify Attestation** — lookup ID → **Verify PQC signature** (ECDSA + ML-DSA off-chain)
+5. Anchor a zk-STARK commitment (demo hash until Winterfell WASM lands)
+6. Anyone with a proof JSON can verify without the issuer's private keys
 
 ## Security & Production Notes
 
