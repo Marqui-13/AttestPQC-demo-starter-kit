@@ -1,8 +1,6 @@
-<div align="center">
-  <img src="https://github.com/Marqui-13/AttestPQC-demo-starter-kit/logo/AttestPQClogo.jpg" alt="AttestPQC Logo" width="180" />
-</div>
-
 # AttestPQC — Post-Quantum + zk-STARK Verifiable Attestation dApp
+
+![Project Image](images/AttestPQClogo.jpg)
 
 **A production-grade decentralized application for registering post-quantum public keys, issuing tamper-proof attestations, and anchoring zk-STARK proofs on-chain.**
 
