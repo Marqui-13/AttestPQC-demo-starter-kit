@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev --webpack",
-    "build": "next build",
+    "build": "next build --webpack",
+    "build:pqc-wasm": "cd ../pqc-wasm && cargo build --target wasm32-unknown-unknown --release && wasm-bindgen target/wasm32-unknown-unknown/release/pqc_wasm.wasm --out-dir ../frontend/public/wasm/pqc --target web --out-name pqc_wasm",
+    "vendor:winter-air": "python ../scripts/vendor-winter-air.py",
+    "build:stark-wasm": "npm run vendor:winter-air && cd ../stark-wasm && cargo build --target wasm32-unknown-unknown --release && wasm-bindgen target/wasm32-unknown-unknown/release/stark_wasm.wasm --out-dir ../frontend/public/wasm/stark --target web --out-name stark_wasm",
     "start": "next start",
     "lint": "eslint"
   },

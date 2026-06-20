@@ -19,6 +19,7 @@ export function hashSubject(identifier: string): Hex {
   return keccak256(toBytes(`subject:${identifier}`));
 }
 
+/** @deprecated Use Winterfell STARK via `@/lib/stark-proof`. */
 export function generateDemoStarkCommitment(attestationId: string): Hex {
   return hashFromSeed(`stark-commitment:${attestationId}:${Date.now()}`);
 }

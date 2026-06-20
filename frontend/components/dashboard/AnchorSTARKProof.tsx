@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { toast } from 'sonner';
 import { Cpu, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -13,12 +13,30 @@ import {
   PQC_ATTESTATION_REGISTRY_ADDRESS,
   pqcAttestationRegistryAbi,
 } from '@/lib/wagmi-config';
-import { generateDemoStarkCommitment } from '@/lib/pqc-demo';
+import { loadAttestationProof } from '@/lib/hybrid-pqc';
+import {
+  deriveBlindingFromProof,
+  generateAttestationStarkProof,
+  loadStarkProof,
+  type StarkProofBundle,
+} from '@/lib/stark-proof';
+import type { Hex } from 'viem';
 
 export function AnchorSTARKProof() {
   const { address } = useAccount();
   const [attestationId, setAttestationId] = useState('');
+  const [lookupId, setLookupId] = useState<bigint | undefined>();
   const [starkCommitment, setStarkCommitment] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [bundle, setBundle] = useState<StarkProofBundle | null>(null);
+
+  const { data: attestation, isFetching } = useReadContract({
+    address: PQC_ATTESTATION_REGISTRY_ADDRESS,
+    abi: pqcAttestationRegistryAbi,
+    functionName: 'getAttestation',
+    args: lookupId !== undefined ? [lookupId] : undefined,
+    query: { enabled: isRegistryConfigured && lookupId !== undefined },
+  });
 
   const { writeContract, data: hash, isPending, reset } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
@@ -32,15 +50,55 @@ export function AnchorSTARKProof() {
     }
   }, [isSuccess, hash, reset]);
 
-  const generateDemo = () => {
+  const loadAttestation = () => {
     if (!attestationId) {
       toast.error('Enter an attestation ID first');
       return;
     }
-    setStarkCommitment(generateDemoStarkCommitment(attestationId));
-    toast.message('Demo STARK commitment generated', {
-      description: 'Replace with Winterfell WASM output in production.',
-    });
+    setLookupId(BigInt(attestationId));
+    const saved = loadStarkProof(attestationId);
+    if (saved) {
+      setBundle(saved);
+      setStarkCommitment(saved.starkCommitment);
+    }
+  };
+
+  const generateProof = async () => {
+    if (!attestationId) {
+      toast.error('Enter an attestation ID first');
+      return;
+    }
+    if (!lookupId || !attestation) {
+      toast.error('Load the attestation from chain first');
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      const pqcProof = loadAttestationProof(attestation.pqcSigHash as Hex);
+      const blinding = pqcProof ? deriveBlindingFromProof(pqcProof) : undefined;
+
+      const result = await generateAttestationStarkProof({
+        attestationId,
+        subject: attestation.subject as Hex,
+        contentHash: attestation.contentHash as Hex,
+        blinding,
+      });
+
+      setBundle(result);
+      setStarkCommitment(result.starkCommitment);
+      toast.success('Winterfell STARK proof generated', {
+        description: pqcProof
+          ? 'Blinding derived from local attestation proof'
+          : 'Random blinding — import attestation proof to make reproducible',
+      });
+    } catch (err) {
+      toast.error('STARK proof failed', {
+        description: err instanceof Error ? err.message : 'WASM error',
+      });
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const anchor = () => {
@@ -77,8 +135,8 @@ export function AnchorSTARKProof() {
           <CardTitle>3. Anchor zk-STARK Proof</CardTitle>
         </div>
         <CardDescription>
-          Attach a STARK proof commitment to an existing attestation for privacy-preserving
-          verification without revealing underlying data.
+          Generate a Winterfell STARK proof binding the attestation subject and content hash to a
+          private blinding factor, then anchor the resulting commitment on-chain.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -105,15 +163,37 @@ export function AnchorSTARKProof() {
             />
           </div>
         </div>
+
+        {attestation && (
+          <p className="text-xs text-zinc-500">
+            Loaded attestation — subject {String(attestation.subject).slice(0, 12)}… · content{' '}
+            {String(attestation.contentHash).slice(0, 12)}…
+          </p>
+        )}
+
         <div className="flex flex-wrap gap-2">
-          <Button onClick={generateDemo} variant="outline" disabled={!address}>
+          <Button onClick={loadAttestation} variant="outline" disabled={!address || isFetching}>
+            {isFetching ? 'Loading…' : 'Load attestation'}
+          </Button>
+          <Button
+            onClick={generateProof}
+            variant="outline"
+            disabled={!address || generating || !attestation}
+          >
             <Sparkles className="mr-2 h-4 w-4" />
-            Generate demo commitment
+            {generating ? 'Proving…' : 'Generate STARK proof'}
           </Button>
           <Button onClick={anchor} disabled={busy || !address}>
             {busy ? 'Confirming…' : 'Anchor on-chain'}
           </Button>
         </div>
+
+        {bundle && (
+          <p className="text-xs text-zinc-500">
+            Proof saved locally ({bundle.proofBytes.length.toLocaleString()} bytes) — verify in the
+            lookup panel below.
+          </p>
+        )}
       </CardContent>
     </Card>
   );

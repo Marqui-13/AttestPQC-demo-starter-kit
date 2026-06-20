@@ -15,6 +15,11 @@ frontend/build/
 contracts/cache/
 contracts/out/
 contracts/broadcast/
+contracts/.env
+
+# Rust / WASM build output (pre-built artifacts in public/wasm/ are committed)
+pqc-wasm/target/
+stark-wasm/target/
 
 # OS / editor
 .DS_Store
@@ -23,5 +28,9 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Terminals / local tooling
+# Local scratch / dev artifacts (do not commit)
+$null
+test-aux.rs
+stark-rescue-ref.rs
+libcrux-kem-snippet.txt
 terminals/

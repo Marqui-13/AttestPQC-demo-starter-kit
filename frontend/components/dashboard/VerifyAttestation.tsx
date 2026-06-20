@@ -23,6 +23,14 @@ import {
   type AttestationProofRecord,
   type OffChainVerificationResult,
 } from '@/lib/hybrid-pqc';
+import {
+  exportStarkProof,
+  importStarkProofFromFile,
+  loadStarkProof,
+  starkCommitmentFromPublicInputs,
+  verifyAttestationStarkProof,
+  type StarkProofBundle,
+} from '@/lib/stark-proof';
 import type { Hex } from 'viem';
 
 export function VerifyAttestation() {
@@ -31,7 +39,11 @@ export function VerifyAttestation() {
   const [proof, setProof] = useState<AttestationProofRecord | null>(null);
   const [verification, setVerification] = useState<OffChainVerificationResult | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [starkBundle, setStarkBundle] = useState<StarkProofBundle | null>(null);
+  const [starkValid, setStarkValid] = useState<boolean | null>(null);
+  const [starkVerifying, setStarkVerifying] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const starkImportRef = useRef<HTMLInputElement>(null);
 
   const { data, isFetching, error, refetch } = useReadContract({
     address: PQC_ATTESTATION_REGISTRY_ADDRESS,
@@ -47,6 +59,12 @@ export function VerifyAttestation() {
     if (local) setProof(local);
   }, [data?.pqcSigHash]);
 
+  useEffect(() => {
+    if (!lookupId) return;
+    const local = loadStarkProof(lookupId.toString());
+    if (local) setStarkBundle(local);
+  }, [lookupId]);
+
   const lookup = () => {
     if (!isRegistryConfigured) {
       toast.error('Set NEXT_PUBLIC_REGISTRY_ADDRESS in .env.local');
@@ -57,6 +75,7 @@ export function VerifyAttestation() {
       return;
     }
     setVerification(null);
+    setStarkValid(null);
     setLookupId(BigInt(attestationId));
     void refetch();
   };
@@ -69,6 +88,37 @@ export function VerifyAttestation() {
       toast.message('Loaded proof from this browser');
     } else {
       toast.error('No local proof found — import a proof JSON file');
+    }
+  };
+
+  const runStarkVerification = async () => {
+    if (!data || !starkBundle) {
+      toast.error('Load an attestation and attach a STARK proof first');
+      return;
+    }
+    setStarkVerifying(true);
+    try {
+      const valid = await verifyAttestationStarkProof(starkBundle);
+      const commitmentMatches =
+        starkBundle.starkCommitment.toLowerCase() ===
+        (data.starkCommitment as string).toLowerCase();
+      setStarkValid(valid && commitmentMatches);
+      if (valid && commitmentMatches) {
+        toast.success('Winterfell STARK verification passed');
+      } else if (valid) {
+        toast.error('STARK proof valid but commitment mismatch', {
+          description: 'On-chain commitment does not match proof public inputs',
+        });
+      } else {
+        toast.error('STARK verification failed');
+      }
+    } catch (err) {
+      setStarkValid(false);
+      toast.error('STARK verification error', {
+        description: err instanceof Error ? err.message : 'WASM error',
+      });
+    } finally {
+      setStarkVerifying(false);
     }
   };
 
@@ -128,8 +178,8 @@ export function VerifyAttestation() {
           <CardTitle>Verify Attestation</CardTitle>
         </div>
         <CardDescription>
-          Look up on-chain data, then verify the hybrid P-256 ECDSA + ML-DSA-65 signature off-chain
-          using a proof bundle (auto-saved when you issue from this browser).
+          Look up on-chain data, verify hybrid PQC signatures off-chain, and optionally verify
+          Winterfell STARK proofs bound to the anchored commitment.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -224,10 +274,84 @@ export function VerifyAttestation() {
               </p>
             )}
 
+            <div className="flex flex-wrap gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-700">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (!lookupId) return;
+                  const local = loadStarkProof(lookupId.toString());
+                  if (local) {
+                    setStarkBundle(local);
+                    toast.message('Loaded STARK proof from this browser');
+                  } else {
+                    toast.error('No local STARK proof — import a STARK JSON file');
+                  }
+                }}
+              >
+                Load local STARK
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => starkImportRef.current?.click()}>
+                <Upload className="mr-1 h-3 w-3" />
+                Import STARK
+              </Button>
+              {starkBundle && (
+                <Button size="sm" variant="outline" onClick={() => exportStarkProof(starkBundle)}>
+                  <Download className="mr-1 h-3 w-3" />
+                  Export STARK
+                </Button>
+              )}
+              <Button
+                size="sm"
+                onClick={runStarkVerification}
+                disabled={!starkBundle || starkVerifying}
+              >
+                <ShieldCheck className="mr-1 h-3 w-3" />
+                {starkVerifying ? 'Verifying…' : 'Verify STARK proof'}
+              </Button>
+              <input
+                ref={starkImportRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    void importStarkProofFromFile(file)
+                      .then((bundle) => {
+                        setStarkBundle(bundle);
+                        toast.success('STARK proof imported');
+                      })
+                      .catch((err: unknown) =>
+                        toast.error('Invalid STARK file', {
+                          description: err instanceof Error ? err.message : 'Parse error',
+                        }),
+                      );
+                  }
+                  e.target.value = '';
+                }}
+              />
+            </div>
+
+            {starkBundle && (
+              <p className="text-xs text-zinc-500">
+                STARK proof loaded — commitment {truncateHex(starkBundle.starkCommitment)} ·
+                expected on-chain{' '}
+                {truncateHex(
+                  starkCommitmentFromPublicInputs(
+                    starkBundle.publicInputs.subject,
+                    starkBundle.publicInputs.content_hash,
+                    starkBundle.publicInputs.attestation_id,
+                    starkBundle.publicInputs.commitment,
+                  ),
+                )}
+              </p>
+            )}
+
             {verification && (
               <div className="space-y-2 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
                 <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                  Off-chain verification
+                  PQC off-chain verification
                 </p>
                 <CheckItem ok={verification.messageMatches} label="Proof matches on-chain subject + content hashes" />
                 <CheckItem ok={verification.pubKeyHashMatches} label="Public key hash matches registered issuer key" />
@@ -235,6 +359,18 @@ export function VerifyAttestation() {
                 <CheckItem
                   ok={verification.signatureValid}
                   label="Hybrid signature valid (ECDSA P-256 + ML-DSA-65)"
+                />
+              </div>
+            )}
+
+            {starkValid !== null && (
+              <div className="space-y-2 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  STARK verification
+                </p>
+                <CheckItem
+                  ok={starkValid}
+                  label="Winterfell proof valid and commitment matches on-chain anchor"
                 />
               </div>
             )}

@@ -36,7 +36,7 @@ In short: It makes digital trust **decentralized, private when needed, and secur
 - Identity & KYC-lite claims with selective disclosure via zk-STARKs (prove attributes without revealing underlying documents)
 - Personal verifiable claims (age, residency, qualifications) with strong privacy
 
-The dApp is **dApp-first**: The smart contract is the core trust layer. All critical actions (PQC key registration, attestation issuance, revocation, STARK proof anchoring) are on-chain transactions. The frontend provides a secure interface to interact with it.
+The smart contract is the core trust layer. All critical actions (hybrid PQC key registration, attestation issuance, revocation, STARK proof anchoring) are on-chain transactions. The frontend provides a secure interface to interact with it.
 
 **Testnet**: Base Sepolia (fast, cheap, excellent faucet via Coinbase Developer Platform)
 
@@ -48,20 +48,25 @@ The dApp is **dApp-first**: The smart contract is the core trust layer. All crit
 - Solidity 0.8.26 + **Foundry** (forge, cast, anvil)
 - OpenZeppelin v5 Upgradeable (UUPS + AccessControlDefaultAdminRules)
 - Custom errors, comprehensive events, pausable, reentrancy guard
-- Enhanced with PQC public key registration and attestation fields ready for PQC signatures + STARK commitments
+- Enhanced with hybrid PQC public key registration and attestation fields ready for PQC signatures + STARK commitments
 
 **Frontend**
-- Next.js 15 (App Router) + TypeScript + Tailwind + shadcn/ui
-- **wagmi v2 + viem** (modern web3)
-- WASM modules for **libcrux** (PQC) and **Winterfell** (zk-STARKs)
-- TanStack Query, ConnectKit, sonner toasts
+- Next.js 16 (App Router) + TypeScript + Tailwind CSS
+- **wagmi v2 + viem** (injected wallet connector)
+- **libcrux WASM** for hybrid PQC keygen and signing (`pqc-wasm/`)
+- TanStack Query, sonner toasts
 
 **PQC Library**
-- Primary: **libcrux** (Rust, formally verified ML-KEM + ML-DSA) compiled to WASM
-- Fallback: **oqs.js** (liboqs) for quick browser demos
+- **libcrux** (Cryspen) compiled to WASM via `pqc-wasm/`:
+  - Hybrid KEM: `X25519MlKem768Draft00` ([Xyber768d00 draft](https://bwesterb.github.io/draft-westerbaan-cfrg-hpke-xyber768d00/draft-westerbaan-cfrg-hpke-xyber768d00.html))
+  - Hybrid signatures: P-256 ECDSA + ML-DSA-65 (custom composition)
+- See `docs/HYBRID_PQC.md` for byte layouts and on-chain hash commitments
 
 **zk-STARK Library**
-- **Winterfell** (pure Rust STARK prover/verifier, excellent WASM support)
+- **Winterfell** (pure Rust STARK prover/verifier) via `stark-wasm/`:
+  - Attestation-binding AIR (private blinding → public commitment)
+  - Client-side prove/verify in browser WASM
+- See `docs/STARK_PROOF.md` for circuit, commitment formula, and build notes
 
 **Indexing & Data**
 - The Graph (subgraph for fast queries on attestations and events)
@@ -78,11 +83,20 @@ The dApp is **dApp-first**: The smart contract is the core trust layer. All crit
 pqc-zk-registry-dapp/
 ├── README.md
 ├── docs/
-│   ├── DEPLOYMENT_GUIDE.md            # Base Sepolia deploy + faucet instructions
+│   ├── DEPLOYMENT_GUIDE.md            # Base Sepolia deploy + faucet + role grant
+│   ├── HYBRID_PQC.md                  # libcrux hybrid KEM + signature spec
+│   ├── STARK_PROOF.md                 # Winterfell circuit + commitment + WASM build
 │   └── FOUNDRY_TESTS_OUTLINE.md       # Test strategy + example tests
+├── scripts/
+│   └── vendor-winter-air.py           # Patches winter-air for Windows builds
+├── pqc-wasm/                          # Rust → WASM (libcrux hybrid PQC bindings)
+├── stark-wasm/                        # Rust → WASM (Winterfell attestation-binding STARK)
+├── vendor/winter-air-0.13.1/          # Vendored winter-air (aux.rs → auxiliary.rs patch)
 ├── contracts/
 │   ├── foundry.toml
 │   ├── .env.example                   # PRIVATE_KEY, RPC, Basescan API key
+│   ├── scripts/
+│   │   └── grant-issuer.ps1           # PowerShell helper for ISSUER_ROLE
 │   ├── src/
 │   │   └── PQCAttestationRegistry.sol # UUPS upgradeable registry (PQC + STARK fields)
 │   ├── script/
@@ -108,11 +122,15 @@ pqc-zk-registry-dapp/
     │   │   ├── RegisterPQCKey.tsx     # Step 1: register PQC key hash
     │   │   ├── IssueAttestation.tsx   # Step 2: issue attestation
     │   │   ├── AnchorSTARKProof.tsx   # Step 3: anchor STARK commitment
-    │   │   └── VerifyAttestation.tsx  # Read-only attestation lookup
+    │   │   └── VerifyAttestation.tsx  # Lookup + PQC/STARK off-chain verification
     │   └── ui/                        # Lightweight UI primitives (button, input, card, …)
+    ├── public/wasm/pqc/               # Pre-built libcrux WASM (pqc_wasm.js + .wasm)
+    ├── public/wasm/stark/             # Pre-built Winterfell WASM (stark_wasm.js + .wasm)
     └── lib/
         ├── wagmi-config.ts            # Chain config, contract ABI + address
-        ├── pqc-demo.ts                # Demo hash helpers (until PQC WASM is integrated)
+        ├── hybrid-pqc.ts              # libcrux WASM loader, key storage, signing
+        ├── pqc-demo.ts                # Hash helpers (subject/content hashing)
+        ├── stark-proof.ts             # Winterfell STARK WASM loader + proof storage
         └── utils.ts
 ```
 
@@ -139,38 +157,35 @@ forge test -vvv
 forge script script/DeployPQCAttestationRegistry.s.sol --rpc-url https://sepolia.base.org --broadcast --verify
 ```
 
-**Get free Base Sepolia testnet ETH**:
-Create a Coinbase account to acces their developer platform.
-
-Navigate to: https://portal.cdp.coinbase.com
-
-On the left side menu under Products, select the Onchain Tools dropdown menu and access the Faucet. Enter your wallet address and request ETH. You should receive testnet funds within seconds.
-
-After deploy, grant roles (ISSUER_ROLE / AUDITOR_ROLE) using `cast`.
+See [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) for faucet links, role grants, and troubleshooting.
 
 ### Frontend
 
 ```bash
 cd frontend
 npm install
+npm run build:pqc-wasm   # only needed if you change pqc-wasm/
+npm run build:stark-wasm # only needed if you change stark-wasm/ (vendors winter-air on Windows)
+npm run dev
 ```
 
-Update the contract address after deployment.
+Update `NEXT_PUBLIC_REGISTRY_ADDRESS` in `.env.local` after deployment.
 
 **Key Flows in the dApp**:
 1. Connect wallet (check **Issuer role** tile — grant via `cast` if not the deployer)
 2. **Generate hybrid PQC keys** → export encrypted backup → **Register on-chain**
-3. **Fill & hybrid-sign** → **Issue on-chain** (proof auto-saved locally; export JSON to share)
-4. **Verify Attestation** — lookup ID → **Verify PQC signature** (ECDSA + ML-DSA off-chain)
-5. Anchor a zk-STARK commitment (demo hash until Winterfell WASM lands)
-6. Anyone with a proof JSON can verify without the issuer's private keys
+3. **Fill & hybrid-sign** → **Issue on-chain** (PQC proof auto-saved locally; export JSON to share)
+4. **Anchor STARK** — load attestation → **Generate STARK proof** (Winterfell WASM) → **Anchor on-chain**
+5. **Verify Attestation** — lookup ID → **Verify PQC signature** + **Verify STARK proof** (off-chain)
+6. Anyone with exported proof JSON can verify without the issuer's private keys
 
 ## Security & Production Notes
 
 - Contract follows established patterns (UUPS, delayed admin, custom errors, events, pausable).
-- PQC keypairs and signatures are generated client-side; on-chain we store commitments/hashes (gas efficient). Full on-chain PQC verification can be added in a future upgrade.
+- Hybrid PQC keypairs and signatures are generated client-side; on-chain we store commitments/hashes (gas efficient). Full on-chain hybrid PQC verification can be added in a future upgrade.
 - STARK proofs are generated client-side; anchor commitments or public inputs on-chain for auditability.
-- Full audit checklist, fuzz/invariant testing recommendations, and deployment hardening steps are in `docs/`.
+- Full audit checklist, fuzz/invariant testing recommendations, and deployment hardening steps are in `docs/FOUNDRY_TESTS_OUTLINE.md`.
+- `vendor/winter-air-0.13.1/` is committed intentionally — required for reproducible Winterfell builds on Windows.
 
 ---
 

@@ -14,7 +14,7 @@ Use **Foundry** for comprehensive coverage:
 2. An attestation cannot be issued if the issuer's PQC key is revoked.
 3. Revoking a PQC key prevents future issuances from that address (until re-registered).
 4. Only the original issuer, admin, or auditor can revoke an attestation.
-5. STARK proof anchoring can only be done by authorized parties for existing attestations.
+5. STARK proof anchoring can only be done by authorized parties for existing attestations (commitment stored on-chain; proof verified off-chain via Winterfell WASM).
 6. Subject → latest attestation mapping always points to the most recent valid (non-revoked) attestation.
 7. Total attestation count only increases on successful issuance.
 
